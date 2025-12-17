@@ -115,8 +115,8 @@ def require_login():
         st.markdown(
             """
             <div class="kc-hero">
-              <h1>Payment Summary</h1>
-              <p>Secure login required. Credentials are stored in Streamlit Secrets.</p>
+              <h1>Revenue Summary</h1>
+              <p>Enter your credentials</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -377,7 +377,8 @@ def main():
             <div class="kc-card">
               <div><b>Step 1</b>. Pick date range</div>
               <div><b>Step 2</b>. Upload deals CSV</div>
-              <div><b>Step 3</b>. Run and download</div>
+              <div><b>Step 3</b>. Run</div>
+              <div><b>Step 4</b>. Download Summary Files</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -389,7 +390,7 @@ def main():
         st.markdown(
             """
             <div class="kc-card kc-muted">
-              Configure login and Mixpanel authorization in Streamlit Secrets.
+              This is the dates to pull revenue details from.
             </div>
             """,
             unsafe_allow_html=True,
@@ -401,7 +402,7 @@ def main():
 
     # Main inputs
     st.markdown('<div class="kc-card">', unsafe_allow_html=True)
-    deals_file = st.file_uploader("Upload deals CSV", type=["csv"])
+    deals_file = st.file_uploader("Upload the deals file. Must be downloaded from Pipedrive or contain 'email' and 'owner' columns", type=["csv"])
     run = st.button("Run", type="primary", disabled=(deals_file is None))
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -551,7 +552,7 @@ def main():
         )
 
     # Output tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["Summary", "Deals join", "Owner breakdown", "Downloads"])
+    tab1, tab2, tab3, tab4 = st.tabs(["All Payments", "Deals - Payments", "Owner breakdown", "Downloads"])
 
     with tab1:
         st.markdown('<div class="kc-card">', unsafe_allow_html=True)
@@ -575,8 +576,8 @@ def main():
     with tab4:
         st.markdown('<div class="kc-card">', unsafe_allow_html=True)
         st.subheader("Downloads")
-        st.download_button("Download summary CSV", data=summary.to_csv(index=False).encode("utf-8"), file_name="summary_by_email.csv", mime="text/csv")
-        st.download_button("Download deals join CSV", data=deals_joined.to_csv(index=False).encode("utf-8"), file_name="deals_with_payment_columns.csv", mime="text/csv")
+        st.download_button("Download summary CSV - all users", data=summary.to_csv(index=False).encode("utf-8"), file_name="summary_by_email.csv", mime="text/csv")
+        st.download_button("Download Deals CSV", data=deals_joined.to_csv(index=False).encode("utf-8"), file_name="deals_with_payment_columns.csv", mime="text/csv")
         st.download_button("Download owner breakdown CSV", data=owner_breakdown.to_csv(index=False).encode("utf-8"), file_name="owner_breakdown.csv", mime="text/csv")
         st.download_button("Download Excel (3 tabs)", data=excel_bytes, file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.markdown("</div>", unsafe_allow_html=True)
