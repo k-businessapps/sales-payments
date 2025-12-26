@@ -1,3 +1,4 @@
+
 import base64
 import json
 import re
@@ -20,7 +21,6 @@ EMAIL_REGEX = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECA
 KC_PRIMARY = "#B04EF0"
 KC_ACCENT = "#E060F0"
 KC_DEEP = "#8030F0"
-KC_TEXT = "#14061F"
 KC_SOFT = "#F6F0FF"
 
 
@@ -64,7 +64,6 @@ def _inject_brand_css():
           .kc-muted {{
             color: rgba(20, 6, 31, 0.72);
           }}
-          /* Buttons */
           div.stButton > button {{
             border-radius: 14px !important;
             border: 0 !important;
@@ -73,21 +72,15 @@ def _inject_brand_css():
             padding: 0.55rem 1rem !important;
             font-weight: 600 !important;
           }}
-          div.stButton > button:hover {{
-            filter: brightness(1.05);
-          }}
-          /* File uploader */
           section[data-testid="stFileUploaderDropzone"] {{
             border-radius: 14px;
             border: 2px dashed rgba(176, 78, 240, 0.35);
             background: {KC_SOFT};
           }}
-          /* Dataframes */
           div[data-testid="stDataFrame"] {{
             border-radius: 14px;
             overflow: hidden;
           }}
-          /* Reduce top padding */
           .block-container {{
             padding-top: 1.2rem;
           }}
@@ -97,26 +90,34 @@ def _inject_brand_css():
     )
 
 
+def _logo_html(width_px: int = 220, top_pad_px: int = 8) -> str:
+    logo_path = Path(__file__).parent / "assets" / "KrispCallLogo.png"
+    if not logo_path.exists():
+        return ""
+    b64 = base64.b64encode(logo_path.read_bytes()).decode("utf-8")
+    return f"""
+      <div style="padding-top:{top_pad_px}px;">
+        <img src="data:image/png;base64,{b64}" style="width:{width_px}px; height:auto;" />
+      </div>
+    """
+
+
 def require_login():
     st.session_state.setdefault("authenticated", False)
-
     if st.session_state["authenticated"]:
         return
 
     _inject_brand_css()
 
-    # Login screen
     c1, c2 = st.columns([1, 2])
     with c1:
-        logo_path = Path(__file__).parent / "assets" / "KrispCallLogo.png"
-        if logo_path.exists():
-            st.image(str(logo_path), use_container_width=True)
+        st.markdown(_logo_html(width_px=260, top_pad_px=14), unsafe_allow_html=True)
     with c2:
         st.markdown(
             """
             <div class="kc-hero">
-              <h1>Revenue Summary</h1>
-              <p>Enter your credentials</p>
+              <h1>Payment Summary</h1>
+              <p>Secure login required. Credentials are stored in Streamlit Secrets.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -169,28 +170,12 @@ def _mixpanel_headers() -> Dict[str, str]:
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 10)
-def fetch_mixpanel_event_export(
-    project_id: int,
-    base_url: str,
-    from_date: date,
-    to_date: date,
-    event_name: str,
-    timeout_s: int = 120,
-) -> pd.DataFrame:
+def fetch_mixpanel_event_export(project_id: int, base_url: str, from_date: date, to_date: date, event_name: str, timeout_s: int = 120) -> pd.DataFrame:
     url = f"{base_url.rstrip('/')}/api/2.0/export"
-    params = {
-        "project_id": project_id,
-        "from_date": from_date.isoformat(),
-        "to_date": to_date.isoformat(),
-        "event": json.dumps([event_name]),
-    }
-
+    params = {"project_id": project_id, "from_date": from_date.isoformat(), "to_date": to_date.isoformat(), "event": json.dumps([event_name])}
     resp = requests.get(url, params=params, headers=_mixpanel_headers(), timeout=timeout_s)
     if resp.status_code != 200:
-        raise RuntimeError(
-            f"Mixpanel export failed for '{event_name}'. "
-            f"Status {resp.status_code}. Body: {resp.text[:500]}"
-        )
+        raise RuntimeError(f"Mixpanel export failed for '{event_name}'. Status {resp.status_code}. Body: {resp.text[:500]}")
 
     rows: List[Dict] = []
     for line in resp.text.splitlines():
@@ -201,7 +186,6 @@ def fetch_mixpanel_event_export(
         out = {"event": obj.get("event")}
         out.update(props)
         rows.append(out)
-
     return pd.DataFrame(rows)
 
 
@@ -209,7 +193,6 @@ def dedupe_mixpanel_export(df: pd.DataFrame) -> pd.DataFrame:
     required = ["event", "distinct_id", "time", "$insert_id"]
     if any(c not in df.columns for c in required):
         return df
-
     df = df.copy()
 
     t = pd.to_numeric(df["time"], errors="coerce")
@@ -221,28 +204,25 @@ def dedupe_mixpanel_export(df: pd.DataFrame) -> pd.DataFrame:
         dt = pd.to_datetime(df["time"], errors="coerce", utc=True)
         df["_time_s"] = (dt.view("int64") // 10**9).astype("Int64")
 
-    sort_cols = ["_time_s"]
-    if "mp_processing_time_ms" in df.columns:
-        sort_cols = ["mp_processing_time_ms"] + sort_cols
-
-    df = df.sort_values(sort_cols, kind="mergesort")
-
-    df = df.drop_duplicates(
-        subset=["event", "distinct_id", "_time_s", "$insert_id"],
-        keep="last",
-    ).drop(columns=["_time_s"])
-
+    df = df.sort_values(["_time_s"], kind="mergesort")
+    df = df.drop_duplicates(subset=["event", "distinct_id", "_time_s", "$insert_id"], keep="last").drop(columns=["_time_s"])
     return df
 
 
-def _extract_first_email(value) -> Optional[str]:
+def _extract_all_emails(value) -> List[str]:
     if value is None or (isinstance(value, float) and pd.isna(value)):
-        return None
+        return []
     s = str(value).strip()
     if not s:
-        return None
-    m = EMAIL_REGEX.search(s)
-    return m.group(0).strip().lower() if m else None
+        return []
+    found = EMAIL_REGEX.findall(s)
+    out, seen = [], set()
+    for e in found:
+        e2 = e.strip().lower()
+        if e2 and e2 not in seen:
+            seen.add(e2)
+            out.append(e2)
+    return out
 
 
 def validate_email_cell(value) -> bool:
@@ -251,7 +231,7 @@ def validate_email_cell(value) -> bool:
     s = str(value).strip()
     if not s:
         return True
-    return _extract_first_email(s) is not None
+    return len(_extract_all_emails(s)) > 0
 
 
 def find_email_columns(df: pd.DataFrame) -> List[str]:
@@ -261,7 +241,12 @@ def find_email_columns(df: pd.DataFrame) -> List[str]:
 def coalesce_email(df: pd.DataFrame, email_cols: List[str]) -> pd.Series:
     if not email_cols:
         return pd.Series([None] * len(df), index=df.index, dtype="object")
-    tmp = pd.DataFrame({c: df[c].map(_extract_first_email) for c in email_cols})
+
+    def first_email(val):
+        emails = _extract_all_emails(val)
+        return emails[0] if emails else None
+
+    tmp = pd.DataFrame({c: df[c].map(first_email) for c in email_cols})
     return tmp.bfill(axis=1).iloc[:, 0]
 
 
@@ -296,14 +281,7 @@ def _annotate_bars_with_ints(ax):
         ax.bar_label(container, labels=labels, padding=2, fontsize=8)
 
 
-def build_excel_with_tables_and_chart(
-    deals_joined: pd.DataFrame,
-    owner_breakdown: pd.DataFrame,
-    chart_fig,
-    owner_breakdown_rounded: pd.DataFrame,
-    from_date: date,
-    to_date: date,
-) -> Tuple[str, bytes]:
+def build_excel_with_tables_and_chart(deals_joined: pd.DataFrame, owner_breakdown: pd.DataFrame, chart_fig, owner_breakdown_rounded: pd.DataFrame, from_date: date, to_date: date) -> Tuple[str, bytes]:
     wb = Workbook()
 
     ws1 = wb.active
@@ -316,7 +294,6 @@ def build_excel_with_tables_and_chart(
         ws2.append(r)
 
     ws3 = wb.create_sheet("Chart")
-
     img_bytes = BytesIO()
     chart_fig.savefig(img_bytes, format="png", bbox_inches="tight", dpi=150)
     img_bytes.seek(0)
@@ -330,8 +307,8 @@ def build_excel_with_tables_and_chart(
     img.anchor = "A1"
     ws3.add_image(img)
 
-    # Rounded numbers table beside the chart (starts at H1)
-    start_col = 8  # H
+    # numbers table at H1
+    start_col = 8
     start_row = 1
     for r_idx, row in enumerate(dataframe_to_rows(owner_breakdown_rounded, index=False, header=True), start_row):
         for c_idx, value in enumerate(row, start_col):
@@ -340,9 +317,44 @@ def build_excel_with_tables_and_chart(
     out = BytesIO()
     wb.save(out)
     out.seek(0)
-
     fname = f"payment_summary_{from_date.strftime('%b%d').lower()}_{to_date.strftime('%b%d').lower()}.xlsx"
     return fname, out.getvalue()
+
+
+def expand_deals_rows_for_multiple_emails(deals_df: pd.DataFrame, preferred_email_cols: List[str]) -> Tuple[pd.DataFrame, List[int], List[int]]:
+    invalid_rows = set()
+    for c in preferred_email_cols:
+        if c in deals_df.columns:
+            bad = ~deals_df[c].map(validate_email_cell)
+            if bad.any():
+                invalid_rows.update((deals_df.index[bad] + 1).tolist())
+
+    expanded_rows = []
+    missing_rows = []
+
+    for idx, row in deals_df.iterrows():
+        chosen_emails = []
+        for c in preferred_email_cols:
+            if c in deals_df.columns:
+                emails = _extract_all_emails(row.get(c))
+                if emails:
+                    chosen_emails = emails
+                    break
+
+        if not chosen_emails:
+            r = row.to_dict()
+            r["email"] = None
+            expanded_rows.append(r)
+            missing_rows.append(idx + 1)
+            continue
+
+        for e in chosen_emails:
+            r = row.to_dict()
+            r["email"] = e
+            expanded_rows.append(r)
+
+    expanded_df = pd.DataFrame(expanded_rows)
+    return expanded_df, sorted(invalid_rows), missing_rows
 
 
 def main():
@@ -350,12 +362,12 @@ def main():
     require_login()
     _inject_brand_css()
 
-    # Header
-    left, right = st.columns([1, 3])
+    # Padding after login
+    st.markdown('<div style="height:10px;"></div>', unsafe_allow_html=True)
+
+    left, right = st.columns([1, 3], vertical_alignment="center")
     with left:
-        logo_path = Path(__file__).parent / "assets" / "KrispCallLogo.png"
-        if logo_path.exists():
-            st.image(str(logo_path), width=210)
+        st.markdown(_logo_html(width_px=240, top_pad_px=10), unsafe_allow_html=True)
     with right:
         st.markdown(
             """
@@ -369,7 +381,6 @@ def main():
 
     st.write("")
 
-    # Sidebar controls
     with st.sidebar:
         st.markdown("### Setup")
         st.markdown(
@@ -377,8 +388,7 @@ def main():
             <div class="kc-card">
               <div><b>Step 1</b>. Pick date range</div>
               <div><b>Step 2</b>. Upload deals CSV</div>
-              <div><b>Step 3</b>. Run</div>
-              <div><b>Step 4</b>. Download Summary Files</div>
+              <div><b>Step 3</b>. Run and download</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -390,7 +400,7 @@ def main():
         st.markdown(
             """
             <div class="kc-card kc-muted">
-              This is the dates to pull revenue details from.
+              Configure login and Mixpanel authorization in Streamlit Secrets.
             </div>
             """,
             unsafe_allow_html=True,
@@ -400,9 +410,8 @@ def main():
         st.error("Date from must be on or before Date to.")
         st.stop()
 
-    # Main inputs
     st.markdown('<div class="kc-card">', unsafe_allow_html=True)
-    deals_file = st.file_uploader("Upload the deals file. Must be downloaded from Pipedrive or contain 'email' and 'owner' columns", type=["csv"])
+    deals_file = st.file_uploader("Upload deals CSV", type=["csv"])
     run = st.button("Run", type="primary", disabled=(deals_file is None))
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -410,47 +419,14 @@ def main():
         st.stop()
 
     with st.spinner("Working on it..."):
-        deals_df = pd.read_csv(deals_file)
+        deals_raw = pd.read_csv(deals_file)
+        preferred_deal_email_cols = ["Person - Email - Other", "Person - Email - Work", "Person - Email - Home", "email"]
 
-        # Deals email extraction (priority order)
-        preferred_deal_email_cols = [
-            "Person - Email - Other",
-            "Person - Email - Work",
-            "Person - Email - Home",
-            "email",
-        ]
+        deals_df, invalid_rows, missing_rows = expand_deals_rows_for_multiple_emails(deals_raw, preferred_deal_email_cols)
 
-        invalid_rows = []
-        for c in preferred_deal_email_cols:
-            if c in deals_df.columns:
-                bad = ~deals_df[c].map(validate_email_cell)
-                if bad.any():
-                    invalid_rows.extend((deals_df.index[bad] + 1).tolist())
-        invalid_rows = sorted(set(invalid_rows))
-
-        deal_email_candidates = {c: deals_df[c].map(_extract_first_email) for c in preferred_deal_email_cols if c in deals_df.columns}
-
-        if not deal_email_candidates:
-            fallback_cols = find_email_columns(deals_df)
-            if fallback_cols:
-                deal_email_candidates = {c: deals_df[c].map(_extract_first_email) for c in fallback_cols}
-            else:
-                deals_df["email"] = None
-                deal_email_candidates = {}
-
-        if deal_email_candidates:
-            deals_df["email"] = pd.DataFrame(deal_email_candidates).bfill(axis=1).iloc[:, 0]
-        else:
-            deals_df["email"] = None
-
-        missing_mask = deals_df["email"].isna() | (deals_df["email"].astype(str).str.strip() == "")
-        missing_rows = (deals_df.index[missing_mask] + 1).tolist()
-
-        # Mixpanel config
         project_id = int(_get_secret(["mixpanel", "project_id"]))
         base_url = _get_secret(["mixpanel", "base_url"], default="https://data-eu.mixpanel.com")
 
-        # Fetch events
         try:
             payments_df = fetch_mixpanel_event_export(project_id, base_url, from_date, to_date, "New Payment Made")
             time.sleep(0.4)
@@ -468,7 +444,6 @@ def main():
 
         pay_amount_col = pick_first_existing_column(payments_df, ["Amount", "Amount Paid", "Payment Amount", "amount"])
         ref_amount_col = pick_first_existing_column(refunds_df, ["Refund Amount", "Refunded Transaction Amount", "Refund.Amount", "refund_amount"])
-
         if pay_amount_col is None:
             st.error("Could not find a payment amount column in 'New Payment Made' export.")
             st.stop()
@@ -479,37 +454,22 @@ def main():
         payments_df[pay_amount_col] = ensure_numeric(payments_df[pay_amount_col])
         refunds_df[ref_amount_col] = ensure_numeric(refunds_df[ref_amount_col])
 
-        payments_summary = (
-            payments_df.dropna(subset=["email"])
-            .groupby("email", as_index=False)[pay_amount_col]
-            .sum()
-            .rename(columns={pay_amount_col: "Total_Amount"})
-        )
-        refunds_summary = (
-            refunds_df.dropna(subset=["email"])
-            .groupby("email", as_index=False)[ref_amount_col]
-            .sum()
-            .rename(columns={ref_amount_col: "Refund_Amount"})
-        )
+        payments_summary = payments_df.dropna(subset=["email"]).groupby("email", as_index=False)[pay_amount_col].sum().rename(columns={pay_amount_col: "Total_Amount"})
+        refunds_summary = refunds_df.dropna(subset=["email"]).groupby("email", as_index=False)[ref_amount_col].sum().rename(columns={ref_amount_col: "Refund_Amount"})
 
         summary = payments_summary.merge(refunds_summary, on="email", how="outer")
         summary["Total_Amount"] = ensure_numeric(summary.get("Total_Amount"))
         summary["Refund_Amount"] = ensure_numeric(summary.get("Refund_Amount"))
         summary["Net_Amount"] = summary["Total_Amount"] - summary["Refund_Amount"]
 
-        # Left join onto deals
         total_col = unique_new_col(deals_df, "Total_Amount")
         refund_col = unique_new_col(deals_df, "Refund_Amount")
         net_col = unique_new_col(deals_df, "Net_Amount")
 
-        deals_joined = deals_df.merge(summary, on="email", how="left").rename(
-            columns={"Total_Amount": total_col, "Refund_Amount": refund_col, "Net_Amount": net_col}
-        )
-
+        deals_joined = deals_df.merge(summary, on="email", how="left").rename(columns={"Total_Amount": total_col, "Refund_Amount": refund_col, "Net_Amount": net_col})
         for c in [total_col, refund_col, net_col]:
             deals_joined[c] = pd.to_numeric(deals_joined[c], errors="coerce").fillna(0.0)
 
-        # Owner breakdown
         owner_col = "Deal - Owner" if "Deal - Owner" in deals_joined.columns else None
         if owner_col is None:
             exact_owner = [c for c in deals_joined.columns if c.strip().lower() == "owner"]
@@ -522,14 +482,8 @@ def main():
             owner_col = unique_new_col(deals_joined, "Deal - Owner")
             deals_joined[owner_col] = "Unknown"
 
-        owner_breakdown = (
-            deals_joined.groupby(owner_col, as_index=False)[[total_col, refund_col, net_col]]
-            .sum(numeric_only=True)
-            .rename(columns={owner_col: "Deal - Owner"})
-            .sort_values(net_col, ascending=False)
-        )
+        owner_breakdown = deals_joined.groupby(owner_col, as_index=False)[[total_col, refund_col, net_col]].sum(numeric_only=True).rename(columns={owner_col: "Deal - Owner"}).sort_values(net_col, ascending=False)
 
-        # Chart
         plot_df = owner_breakdown.set_index("Deal - Owner")[[total_col, refund_col, net_col]]
         fig, ax = plt.subplots()
         plot_df.plot(kind="bar", ax=ax, color=[KC_PRIMARY, KC_ACCENT, KC_DEEP])
@@ -542,18 +496,9 @@ def main():
         for c in [total_col, refund_col, net_col]:
             owner_breakdown_rounded[c] = owner_breakdown_rounded[c].round(0).astype(int)
 
-        fname, excel_bytes = build_excel_with_tables_and_chart(
-            deals_joined=deals_joined,
-            owner_breakdown=owner_breakdown,
-            chart_fig=fig,
-            owner_breakdown_rounded=owner_breakdown_rounded,
-            from_date=from_date,
-            to_date=to_date,
-        )
+        fname, excel_bytes = build_excel_with_tables_and_chart(deals_joined, owner_breakdown, fig, owner_breakdown_rounded, from_date, to_date)
 
-    # Output tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["All Payments", "Deals - Payments", "Owner breakdown", "Downloads"])
-
+    tab1, tab2, tab3, tab4 = st.tabs(["Summary", "Deals join", "Owner breakdown", "Downloads"])
     with tab1:
         st.markdown('<div class="kc-card">', unsafe_allow_html=True)
         st.subheader("Summary by Email")
@@ -563,6 +508,7 @@ def main():
     with tab2:
         st.markdown('<div class="kc-card">', unsafe_allow_html=True)
         st.subheader("Deals with Payment Columns")
+        st.caption(f"Deals expanded from {len(deals_raw):,} to {len(deals_df):,} rows after splitting comma-separated emails in a chosen email cell.")
         st.dataframe(deals_joined, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -576,19 +522,18 @@ def main():
     with tab4:
         st.markdown('<div class="kc-card">', unsafe_allow_html=True)
         st.subheader("Downloads")
-        st.download_button("Download summary CSV - all users", data=summary.to_csv(index=False).encode("utf-8"), file_name="summary_by_email.csv", mime="text/csv")
-        st.download_button("Download Deals CSV", data=deals_joined.to_csv(index=False).encode("utf-8"), file_name="deals_with_payment_columns.csv", mime="text/csv")
+        st.download_button("Download summary CSV", data=summary.to_csv(index=False).encode("utf-8"), file_name="summary_by_email.csv", mime="text/csv")
+        st.download_button("Download deals join CSV", data=deals_joined.to_csv(index=False).encode("utf-8"), file_name="deals_with_payment_columns.csv", mime="text/csv")
         st.download_button("Download owner breakdown CSV", data=owner_breakdown.to_csv(index=False).encode("utf-8"), file_name="owner_breakdown.csv", mime="text/csv")
         st.download_button("Download Excel (3 tabs)", data=excel_bytes, file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # Logs section
     if invalid_rows or missing_rows:
         st.write("")
         st.markdown('<div class="kc-card">', unsafe_allow_html=True)
         st.subheader("Data quality logs")
         if invalid_rows:
-            with st.expander(f"Invalid email values: {len(invalid_rows)} row(s)"):
+            with st.expander(f"Invalid email cells (non-empty but no valid email): {len(invalid_rows)} row(s)"):
                 st.text("\n".join([f"Row #{n}" for n in invalid_rows[:500]]))
         if missing_rows:
             with st.expander(f"Missing email after coalescing: {len(missing_rows)} row(s)"):
